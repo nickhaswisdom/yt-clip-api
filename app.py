@@ -5,7 +5,7 @@ import tempfile
 import api_video
 
 app = Flask(__name__)
-API_KEY = os.getenv("APIVIDEO_API_KEY")
+API_KEY = os.getenv("opBWFggfaxW8kPeDSr5iP5eNDLsyLS1cEPa0vVcJcOd")
 
 client = api_video.AuthenticatedClient(api_key=API_KEY)
 
