@@ -1,68 +1,44 @@
 from flask import Flask, request, jsonify
-from moviepy.editor import VideoFileClip, CompositeVideoClip
 from pytube import YouTube
 import os
 import tempfile
-import uuid
-import subprocess
-import requests
+import api_video
 
 app = Flask(__name__)
+API_KEY = os.getenv("APIVIDEO_API_KEY")
 
-FFMPEG_PATH = "./bin/ffmpeg"  # bundled ffmpeg binary (you'll add this later)
+client = api_video.AuthenticatedClient(api_key=API_KEY)
 
-def download_youtube_clip(url, start, end, filename):
-    yt = YouTube(url)
-    stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-    stream.download(filename=filename + ".mp4")
-    return trim_video(filename + ".mp4", start, end, filename + "_trimmed.mp4")
+@app.route("/clip", methods=["POST"])
+def clip_video():
+    try:
+        data = request.get_json()
 
-def trim_video(input_path, start, end, output_path):
-    subprocess.run([
-        FFMPEG_PATH,
-        "-ss", str(start),
-        "-to", str(end),
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        output_path
-    ])
-    return output_path
+        main_url = data["mainUrl"]
+        start = int(data["startSeconds"])
+        end = int(data["endSeconds"])
 
-def upload_to_tmpfiles(filepath):
-    with open(filepath, "rb") as f:
-        response = requests.post("https://file.io", files={"file": f})
-        return response.json()["link"]
+        # Download the main video from YouTube
+        yt = YouTube(main_url)
+        stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
 
-@app.route('/combine', methods=['POST'])
-def combine():
-    data = request.json
-    main_url = data.get("mainUrl")
-    bg_url = data.get("backgroundUrl")
-    start = data.get("startSeconds")
-    end = data.get("endSeconds")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+            stream.download(output_path=os.path.dirname(tmp_file.name), filename=os.path.basename(tmp_file.name))
+            video_path = tmp_file.name
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        os.chdir(tmpdir)
-        uid = str(uuid.uuid4())[:8]
+        # Upload to api.video
+        video = client.videos.create(title="Trimmed YouTube Clip")
+        with open(video_path, "rb") as f:
+            client.videos.upload(video_id=video.video_id, file=f)
 
-        main_clip_path = download_youtube_clip(main_url, start, end, f"main_{uid}")
-        bg_clip_path = download_youtube_clip(bg_url, start, end, f"bg_{uid}")
-
-        # Optional: overlay or do more editing here if needed
-        # For now, just return the trimmed clip URLs
-
-        main_link = upload_to_tmpfiles(main_clip_path)
-        bg_link = upload_to_tmpfiles(bg_clip_path)
+        # Create a clip using the trimming feature
+        trimmed = client.video_clipping.create(video_id=video.video_id, trim_from=start, trim_to=end)
 
         return jsonify({
-            "mainClip": main_link,
-            "backgroundClip": bg_link
+            "original_video_url": video.assets["player"],
+            "trimmed_video_url": trimmed.assets["player"]
         })
 
-@app.route('/', methods=['GET'])
-def home():
-    return "YT Clip API is alive!"
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
